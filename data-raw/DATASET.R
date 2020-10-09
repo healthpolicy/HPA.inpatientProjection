@@ -1,6 +1,9 @@
 library(tidyverse)
 library(data.table)
 
+
+# From HCUP source to fst files -------------------------------------------
+
 # Copied and modified from Jim's function (S:\Health Data\USA\HCUP_R)
 read_in_NIS <- function (dirA = "S:\\Health Data\\USA\\HCUP\\",
                          YearA,
@@ -50,7 +53,7 @@ read_in_NIS <- function (dirA = "S:\\Health Data\\USA\\HCUP\\",
     textfile <- paste0(dirC,"\\NIS_",YearA,fileA,".ASC")
 
     readr::read_fwf(textfile, 
-                           fwf_widths(widths3,trimws(as.character(spec$Data_element_name)))) %>%
+                    fwf_widths(widths3,trimws(as.character(spec$Data_element_name)))) %>%
       data.table::data.table() %>%
       mutate_at(vars(starts_with("I10_DX")),funs(trimws(.)))
   }
@@ -61,12 +64,9 @@ read_in_NIS <- function (dirA = "S:\\Health Data\\USA\\HCUP\\",
   )
 }
 
-### >> Test on years prior to 2017
 nis0_ls <- map(
-  2012:2017, 
-  safely(
-    read_in_NIS(YearA = .x)
-  )
+  2015:2017, 
+  ~read_in_NIS(YearA = .x)
 )
 
 nis_core <- map(nis0_ls, "core") %>% 
@@ -80,10 +80,17 @@ nis_core <- map(nis0_ls, "core") %>%
     PL_NCHS, ZIPINC_QRTL, PAY1,
     LOS, TOTCHG
   ) %>% 
-  data.table::rbindlist()
+  data.table::rbindlist(fill = TRUE)
 
 nis_hosp <- map(nis0_ls, "hosp") %>% 
   data.table::rbindlist()
+
+fst::write_fst(nis_core, "data-raw/nis_core.fst", compress = 100)
+fst::write_fst(nis_hosp, "data-raw/nis_hosp.fst", compress = 100)
+
+
+# Modifying fst files -----------------------------------------------------
+
 
 
 
