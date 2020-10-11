@@ -51,7 +51,6 @@ read_in_NIS <- function (dirA = "S:\\Health Data\\USA\\HCUP\\",
     file.remove(tmpfile)
 
     textfile <- paste0(dirC,"\\NIS_",YearA,fileA,".ASC")
-
     readr::read_fwf(textfile,
                     fwf_widths(widths3,trimws(as.character(spec$Data_element_name)))) %>%
       data.table::data.table() %>%
@@ -64,16 +63,33 @@ read_in_NIS <- function (dirA = "S:\\Health Data\\USA\\HCUP\\",
   )
 }
 
-nis0_ls <- map(2015:2017, ~read_in_NIS(YearA = .x))
+nis0_ls <- map(
+  2015:2017 %>% setNames(., .), 
+  ~read_in_NIS(YearA = .x)
+)
 
-nis_core <- map(nis0_ls, "core") %>%
+nis2015_drg <- map2(
+  list("NIS_2015Q1Q3_DX_PR_GRPS.ASC", "NIS_2015Q4_DX_PR_GRPS.ASC"),
+  list(
+    fwf_cols(DRG = c(181, 183), KEY_NIS = c(594, 603)),
+    fwf_cols(DRG = c(1, 3), KEY_NIS = c(366, 375))
+  ),
+  ~readr::read_fwf(file.path("S:\\Health Data\\USA\\HCUP\\", "NIS_2015", .x), .y)
+) %>% 
+  data.table::rbindlist()
+
+nis0_ls[["2015"]]$core <- nis0_ls[["2015"]]$core %>% 
+  left_join(nis2015_drg) %>% 
+  as.data.table()
+
+nis_core <- map(nis0_ls, "core") %>% 
   map(
     select,
     DISCWT, KEY_NIS, NIS_STRATUM,
     YEAR, DQTR,
     AGE, FEMALE, RACE,
     HCUP_ED, HOSP_DIVISION, HOSP_NIS,
-    starts_with("DRG"),
+    DRG,
     PL_NCHS, ZIPINC_QRTL, PAY1,
     LOS, TOTCHG
   ) %>%
