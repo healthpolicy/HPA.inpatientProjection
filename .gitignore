@@ -3,3 +3,7 @@
 .RData
 .Ruserdata
 *.fst
+*.csv
+*.sas7bdat
+*.zip
+data-raw/zipcty

@@ -1,5 +1,7 @@
 library(tidyverse)
 library(data.table)
+library(datasets)
+# library(tidycensus)
 
 
 # From HCUP source to fst files -------------------------------------------
@@ -104,10 +106,106 @@ fst::write_fst(nis_hosp, "data-raw/nis_hosp.fst", compress = 100)
 
 # Modifying fst files -----------------------------------------------------
 
-nis_core <- fst::read_fst("data-raw/nis_core.fst", as.data.table = TRUE)
+nis_core <- fst::read_fst("data-raw/nis_core.fst", as.data.table = TRUE)[AGE != -99 & PL_NCHS != -99]
 nis_hosp <- fst::read_fst("data-raw/nis_hosp.fst", as.data.table = TRUE)
 
-# DRG in 2015?
+census_div_lkup <- tibble(
+  reg = as.numeric(state.region),
+  regx = state.region,
+  div = as.numeric(state.division),
+  divx = state.division,
+  statex = state.name,
+  stateabb = state.abb
+)
+
+# https://www.irs.gov/statistics/soi-tax-stats-individual-income-tax-statistics-2017-zip-code-data-soi
+income <- vroom::vroom("data-raw/17zpallagi.csv") %>% 
+  as.data.table()
+
+# https://www.cdc.gov/nchs/data_access/urban_rural.htm#Data_Files_and_Documentation
+urban_rural <- haven::read_sas("data-raw/NCHSurbruralcodes2013.sas7bdat")
+
+# https://wonder.cdc.gov/wonder/sci_data/codes/fips/type_txt/cntyxref.asp
+zip_fips_lkup <- map(1:10, ~read_fwf(
+  paste0("data-raw/zipcty/zipcty", .x),
+  fwf_cols(zip = c(1, 5), stateabb = c(24, 25), fips = c(26, 28))
+) %>% 
+  unique()) %>% 
+  bind_rows()
+
+
+urban_rural %>% filter(ctyfips == 119)
+
+zip_info <- inner_join(
+  income_zip[, .(adj_gross_inc = weighted.mean(A00100, N1)), 
+             by = .(stateabb = STATE, zip = zipcode)] %>% 
+    mutate(ZIPINC_QRTL = cut(
+      adj_gross_inc,
+      breaks = c(-1, 44000, 56000, 74000, Inf),
+      labels = 1:4
+    )) %>% 
+    mutate(ZIPINC_QRTL = as.character(ZIPINC_QRTL)),
+  urban_rural_zip %>% 
+    mutate(zip = formatC(ctyfips, width = 5, flag = "0")) %>% 
+    select(zip, PL_NCHS = CODE2013)  
+)
+
+
+nis_core$PL_NCHS %>% class
+
+nis_core
+
+# POR: div > zip
+# POT: div > hosp
+# CS: A-DRG? > DRG
+
+# Census div / ZIP / inc_qtl / nchs
+
+# https://www.hcup-us.ahrq.gov/db/nation/nis/nisdde.jsp
+nis_core$ZIPINC_QRTL
+nis_core$PL_NCHS
+# https://www.cdc.gov/nchs/data_access/urban_rural.htm
+# 1	"Central" counties of metro areas of >=1 million population
+# 2	"Fringe" counties of metro areas of >=1 million population
+# 3	Counties in metro areas of 250,000-999,999 population
+# 4	Counties in metro areas of 50,000-249,999 population
+# 5	Micropolitan counties
+# 6	Not metropolitan or micropolitan counties
+# .	Missing
+
+
+nis_hosp$HOSP_DIVISION
+# Division 1 (New England): Maine, New Hampshire, Vermont, Massachusetts, Rhode Island, Connecticut
+# Division 2 (Mid-Atlantic): New York, Pennsylvania, New Jersey
+# Division 3 (East North Central): Wisconsin, Michigan, Illinois, Indiana, Ohio
+# Division 4 (West North Central): Missouri, North Dakota, South Dakota, Nebraska, Kansas, Minnesota, Iowa
+# Division 5 (South Atlantic): Delaware, Maryland, District of Columbia, Virginia, West Virginia, North Carolina, South Carolina, Georgia, Florida
+# Division 6 (East South Central) Kentucky, Tennessee, Mississippi, Alabama
+# Division 7 (West South Central) Oklahoma, Texas, Arkansas, Louisiana
+# Division 8 (Mountain) Idaho, Montana, Wyoming, Nevada, Utah, Colorado, Arizona, New Mexico
+# Division 9 (Pacific) Alaska, Washington, Oregon, California, Hawaii
+nis_hosp$NIS_STRATUM
+
+
+-99
+nis_core$age <- cut(nis_core$AGE, 
+                    breaks = c(5 * 0:17, Inf), 
+                    labels = paste0(
+                      formatC(5 * 0:17, width = 2, flag = "0"),
+                      c(formatC(5 * 1:17 - 1, width = 2, flag = "0"), "")
+                    ), 
+                    right = FALSE)
+
+
+
+
+
+
+map(nis_core, ~mean(.x == -99))
+glimpse(nis_core)
+nis_core$AGE %>% summary
+
+
 # Is HOSP_NIS consistent?
 
 # Place of Residence
