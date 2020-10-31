@@ -118,42 +118,74 @@ census_div_lkup <- tibble(
   stateabb = state.abb
 )
 
+
+# To map geography (later) ------------------------------------------------
+
 # https://www.irs.gov/statistics/soi-tax-stats-individual-income-tax-statistics-2017-zip-code-data-soi
-income <- vroom::vroom("data-raw/17zpallagi.csv") %>% 
-  as.data.table()
+# income <- vroom::vroom("data-raw/17zpallagi.csv") %>% 
+#   as.data.table()
 
 # https://www.cdc.gov/nchs/data_access/urban_rural.htm#Data_Files_and_Documentation
-urban_rural <- haven::read_sas("data-raw/NCHSurbruralcodes2013.sas7bdat")
+# urban_rural <- haven::read_sas("data-raw/NCHSurbruralcodes2013.sas7bdat")
 
 # https://wonder.cdc.gov/wonder/sci_data/codes/fips/type_txt/cntyxref.asp
-zip_fips_lkup <- map(1:10, ~read_fwf(
-  paste0("data-raw/zipcty/zipcty", .x),
-  fwf_cols(zip = c(1, 5), stateabb = c(24, 25), fips = c(26, 28))
-) %>% 
-  unique()) %>% 
-  bind_rows()
+# zip_fips_lkup <- map(1:10, ~read_fwf(
+#   paste0("data-raw/zipcty/zipcty", .x),
+#   fwf_cols(zip = c(1, 5), stateabb = c(24, 25), fips = c(26, 28))
+# )) %>% 
+#   rbindlist() %>% 
+#   unique() %>% 
+#   filter(!is.na(zip)) %>% 
+#   mutate(fips = as.numeric(fips))
+
+# zip_info <- inner_join(
+#   
+#   income[, .(n = sum(N1), adj_gross_inc = weighted.mean(A00100, N1)), 
+#          by = .(stateabb = STATE, zip = zipcode)] %>% 
+#     mutate(ZIPINC_QRTL = cut(
+#       adj_gross_inc,
+#       breaks = c(-Inf, 44000, 56000, 74000, Inf),
+#       labels = 1:4
+#     )) %>% 
+#     mutate(ZIPINC_QRTL = as.character(ZIPINC_QRTL)),
+#   
+#   urban_rural %>% 
+#     select(stateabb = ST_ABBREV, fips = ctyfips, ctypop, PL_NCHS = CODE2013) %>% 
+#     left_join(zip_fips_lkup) %>% 
+#     group_by(stateabb, zip) %>% 
+#     summarise(PL_NCHS = round(weighted.mean(PL_NCHS, ctypop)), .groups = "drop")
+# 
+# ) %>% 
+#   left_join(
+#     census_div_lkup %>% 
+#       select(stateabb, div)
+#   ) %>% 
+#   select(-adj_gross_inc, -stateabb)
+# 
+# nis_for_zip_mapping <- nis_core[, .(DISCWT, KEY_NIS, YEAR, HOSP_DIVISION, PL_NCHS, ZIPINC_QRTL)]
 
 
-urban_rural %>% filter(ctyfips == 119)
-
-zip_info <- inner_join(
-  income_zip[, .(adj_gross_inc = weighted.mean(A00100, N1)), 
-             by = .(stateabb = STATE, zip = zipcode)] %>% 
-    mutate(ZIPINC_QRTL = cut(
-      adj_gross_inc,
-      breaks = c(-1, 44000, 56000, 74000, Inf),
-      labels = 1:4
-    )) %>% 
-    mutate(ZIPINC_QRTL = as.character(ZIPINC_QRTL)),
-  urban_rural_zip %>% 
-    mutate(zip = formatC(ctyfips, width = 5, flag = "0")) %>% 
-    select(zip, PL_NCHS = CODE2013)  
-)
+# Temporary showcase version ----------------------------------------------
 
 
-nis_core$PL_NCHS %>% class
 
-nis_core
+
+.nis <- nis_for_zip_mapping[HOSP_DIVISION == "1"]
+.zip <- zip_info[div == "1"]
+
+.nis[YEAR == "2017"] %>% 
+  group_by(PL_NCHS, ZIPINC_QRTL) %>% 
+  summarise(sum(DISCWT))
+
+nis_core %>% map_dbl(~mean(.x < 0))
+
+# Pop proportion (+/-10%)
+# Mathing inc/nchs
+# Remnant go to inter division
+
+
+
+
 
 # POR: div > zip
 # POT: div > hosp
