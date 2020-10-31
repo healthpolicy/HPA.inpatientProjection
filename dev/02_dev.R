@@ -16,23 +16,23 @@
 ## Dependencies ----
 ## Add one line by package you want to add as dependency
 usethis::use_pipe()
-usethis::use_package("dplyr")
+attachment::att_from_rscripts() %>% 
+  lapply(usethis::use_package)
 
 ## Add modules ----
 ## Create a module infrastructure in R/
-golem::add_module( name = "name_of_module1" ) # Name of the module
-
+# golem::add_module(name = "chart")
 
 ## Add helper functions ----
 ## Creates ftc_* and utils_*
-golem::add_fct( "helpers" )
-golem::add_utils( "helpers" )
+# golem::add_fct( "helpers" )
+# golem::add_utils( "helpers" )
 
 ## External resources
 ## Creates .js and .css files at inst/app/www
-golem::add_js_file( "script" )
-golem::add_js_handler( "handlers" )
-golem::add_css_file( "custom" )
+# golem::add_js_file( "script" )
+# golem::add_js_handler( "handlers" )
+golem::add_css_file("style")
 
 ## Add internal datasets ----
 ## If you have data in your package

@@ -3,14 +3,24 @@
 #' @param request Internal parameter for `{shiny}`. 
 #'     DO NOT REMOVE.
 #' @import shiny
+#' @importFrom leaflet leafletOutput
 #' @noRd
 app_ui <- function(request) {
   tagList(
     # Leave this function for adding external resources
     golem_add_external_resources(),
     # List the first level UI elements here 
-    fluidPage(
-      h1("HPA.inpatientProjection")
+    leaflet::leafletOutput("map", height = "100vh"),
+    absolutePanel(
+      id = "controls", class = "panel panel-default", 
+      fixed = TRUE,
+      top = "5vh", height = "95vh",
+      left = "auto", right = 20, width = "45vw", 
+      
+      h3("Projection"),
+      "Test",
+      h3("Comparison"),
+      "Test"
     )
   )
 }

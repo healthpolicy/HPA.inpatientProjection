@@ -1,6 +1,7 @@
 library(tidyverse)
 library(data.table)
 library(datasets)
+library(sf)
 # library(tidycensus)
 
 
@@ -167,7 +168,18 @@ census_div_lkup <- tibble(
 
 # Temporary showcase version ----------------------------------------------
 
+usmap_shape <- USAboundaries::us_states() %>% 
+  left_join(census_div_lkup, by = c("state_abbr" = "stateabb")) %>% 
+  group_by(div, divx) %>% 
+  summarise(geometry = st_union(geometry), .groups = "drop") %>% 
+  filter(!is.na(div))
 
+# %>% 
+#   leaflet() %>% 
+#   addTiles() %>% 
+#   addPolygons(fill = ~divx, label = ~divx)
+  
+  
 
 
 .nis <- nis_for_zip_mapping[HOSP_DIVISION == "1"]
@@ -182,10 +194,6 @@ nis_core %>% map_dbl(~mean(.x < 0))
 # Pop proportion (+/-10%)
 # Mathing inc/nchs
 # Remnant go to inter division
-
-
-
-
 
 # POR: div > zip
 # POT: div > hosp
@@ -253,4 +261,7 @@ nis_core[, .N, by = .(ZIPINC_QRTL, YEAR)] %>%
 
 nis_hosp
 
-# usethis::use_data(DATASET, overwrite = TRUE)
+
+# -------------------------------------------------------------------------
+
+usethis::use_data(usmap_shape, overwrite = TRUE)

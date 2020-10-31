@@ -1,0 +1,13 @@
+body {
+  margin: 0 0 0 0;
+}
+
+#controls {
+  /* Appearance */
+  background-color: rgba(255,255,255,0.2);
+  color: white;
+  padding: 0 20px 20px 20px;
+  /* Fade out while not hovering */
+  zoom: 0.9;
+  transition: opacity 500ms 1s;
+}
