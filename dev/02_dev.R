@@ -26,7 +26,7 @@ attachment::att_from_rscripts() %>%
 ## Add helper functions ----
 ## Creates ftc_* and utils_*
 # golem::add_fct( "helpers" )
-# golem::add_utils( "helpers" )
+golem::add_utils("valueBox")
 
 ## External resources
 ## Creates .js and .css files at inst/app/www

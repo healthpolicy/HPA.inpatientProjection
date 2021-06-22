@@ -1,108 +1,215 @@
 library(tidyverse)
 library(data.table)
-library(datasets)
-library(sf)
-# library(tidycensus)
 
 
-# From HCUP source to fst files -------------------------------------------
+# Read in raw data and save selected columns ------------------------------
 
-# Copied and modified from Jim's function (S:\Health Data\USA\HCUP_R)
-read_in_NIS <- function (dirA = "S:\\Health Data\\USA\\HCUP\\",
-                         YearA,
-                         str_start = c(1, 3, 4, 10),
-                         str_end   = c(2, 3, 9, 100)) {
-
-  dirC = paste0(dirA,"NIS_",YearA)
-
-  read_inA <- function(fileA = "_Core") {
-
-    urlfileA = paste0("FileSpecifications_NIS_",YearA,fileA,".TXT")
-    url = paste0("https://www.hcup-us.ahrq.gov/db/nation/nis/tools/stats/",urlfileA)
-    tmpfile <- tempfile()
-
-    download.file(url, tmpfile)
-    widths <- (str_end - str_start) + 1
-
-    spec1 = readr::read_fwf(tmpfile,
-                            skip=8,
-                            n_max=10,
-                            fwf_widths(widths))
-    widths2 <- (spec1$X3 - spec1$X1) + 2
-    colnames2 = c("Database_name",
-                  "Discharge_year",
-                  "File_name",
-                  "Data_element_number",
-                  "Data_element_name",
-                  "Start",
-                  "End",
-                  "Digits_after_decimal",
-                  "Data_element_type",
-                  "Data_element_label")
-    n_ <- readr::read_fwf(tmpfile,
-                          skip=1,
-                          n_max=1,
-                          fwf_widths(c(23,8))) %>%
-      .$X2 %>%
-      as.numeric()
-    spec <- readr::read_fwf(tmpfile,
-                            skip=20,
-                            fwf_widths(widths2,colnames2))
-
-    widths3 <- (spec$End - spec$Start) + 1
-
-    file.remove(tmpfile)
-
-    textfile <- paste0(dirC,"\\NIS_",YearA,fileA,".ASC")
-    readr::read_fwf(textfile,
-                    fwf_widths(widths3,trimws(as.character(spec$Data_element_name)))) %>%
-      data.table::data.table() %>%
-      mutate_at(vars(starts_with("I10_DX")),funs(trimws(.)))
+get_hcup_spec <- function(.file, .year) {
+  spec_url <- paste0("https://www.hcup-us.ahrq.gov/db/nation/nis/tools/stats/",
+                     "FileSpecifications_NIS_", .year, "_", .file, ".TXT")
+  spec_df_raw <- tibble::tibble(src = readr::read_lines(spec_url))
+  spec_ls <- spec_df_raw %>% 
+    mutate(chunk_no = cumsum(src == "")) %>% 
+    filter(src != "") %>% 
+    split(.$chunk_no) %>% 
+    setNames(c("info", "fwf", "content")) %>% 
+    map("src")
+  message(paste(spec_ls$info[1], "- getting spec..."))
+  
+  col_number_nchar <- min(which(str_split(spec_ls$fwf[2], "")[[1]] == " "))
+  spec_fwf <- tibble(
+    col = spec_ls$fwf %>% substr(1, col_number_nchar),
+    desc = spec_ls$fwf %>% substr(col_number_nchar + 1, nchar(.))
+  ) %>% 
+    filter(str_detect(col, "\\d")) %>% 
+    mutate(
+      desc = str_trim(desc),
+      desc = str_replace_all(tolower(desc), "\\s", "_"),
+      desc = case_when(
+        str_detect(desc, "data_element_name") ~ "var",
+        str_detect(desc, "data_element_type") ~ "type",
+        str_detect(desc, "starting_column") ~ "start",
+        str_detect(desc, "ending_column") ~ "end",
+        str_detect(desc, "data_element_label") ~ "varx"
+      )
+    ) %>% 
+    filter(!is.na(desc)) %>% 
+    separate(col, into = c("start", "end"), sep = "\\-") %>% 
+    mutate(across(c(start, end), as.numeric))
+  
+  spec_df <- tibble(src = spec_ls$content)
+  for (.fwf in 1:nrow(spec_fwf)) {
+    .fwf_info <- spec_fwf[.fwf, ]
+    spec_df[[.fwf_info$desc]] <- substr(spec_df$src, .fwf_info$start, .fwf_info$end)
   }
-
-  list(
-    core = read_inA(fileA = "_Core"),
-    hosp = read_inA(fileA = "_Hospital")
-  )
+  
+  spec_df %>% 
+    mutate(
+      across(c(var, type), ~str_remove_all(., "\\s")),
+      across(c(start, end), as.numeric),
+      width = end - start + 1
+    ) %>% 
+    select(var, varx, type, start, end, width)
 }
 
-nis0_ls <- map(
-  2015:2017 %>% setNames(., .), 
-  ~read_in_NIS(YearA = .x)
+read_hcup_fwf <- function(.file, .year, .spec_df, .root_dir) {
+  filepath <- paste0(.root_dir, "NIS_", .year, "\\NIS_", .year, "_", .file, ".ASC")
+  data_read_in <- readr::read_fwf(
+    filepath, fwf_widths(.spec_df$width, .spec_df$var)
+    # , n_max = 100000
+  )
+  attr(data_read_in, "spec") <- .spec_df
+  return(data_read_in)  
+}
+
+file_year_combn <- expand_grid(
+  file = c("Core", "Hospital"),
+  year = 2012:2017
 )
 
-nis2015_drg <- map2(
-  list("NIS_2015Q1Q3_DX_PR_GRPS.ASC", "NIS_2015Q4_DX_PR_GRPS.ASC"),
-  list(
-    fwf_cols(DRG = c(181, 183), KEY_NIS = c(594, 603)),
-    fwf_cols(DRG = c(1, 3), KEY_NIS = c(366, 375))
-  ),
-  ~readr::read_fwf(file.path("S:\\Health Data\\USA\\HCUP\\", "NIS_2015", .x), .y)
-) %>% 
-  data.table::rbindlist()
+.root_dir <- "S:\\Health Data\\USA\\HCUP\\"
 
-nis0_ls[["2015"]]$core <- nis0_ls[["2015"]]$core %>% 
-  left_join(nis2015_drg) %>% 
-  as.data.table()
+for (i in 1:nrow(file_year_combn)) {
+  .file <- file_year_combn$file[i]
+  .year <- file_year_combn$year[i]
+  .spec_df <- get_hcup_spec(.file, .year)
+  raw_data <- read_hcup_fwf(.file, .year, .spec_df, .root_dir)
+  if (.file == "Core") {
+    .target_columns <- c(
+      "DISCWT", 
+      "KEY_NIS",
+      "NIS_STRATUM", "YEAR", "DQTR",
+      "AGE", "FEMALE", "RACE", "HCUP_ED", "HOSP_DIVISION",
+      "HOSP_NIS", # "HOSPID",
+      "DRG", "PL_NCHS", "ZIPINC_QRTL", "PAY1",        
+      "LOS", "TOTCHG"
+    )
+    .target_columns <- .target_columns %>% intersect(names(raw_data))
+    .read_in <- raw_data[, .target_columns]
+  } else if (.file == "Hospital") {
+    .read_in <- raw_data
+  }
+  fst::write_fst(.read_in, paste0("data-raw/working/", .file, "_", .year, ".fst"), compress = 100)
+  # result_ls[[.file]][[.year]] <- .read_in
+  rm(raw_data);gc()
+}
 
-nis_core <- map(nis0_ls, "core") %>% 
-  map(
-    select,
-    DISCWT, KEY_NIS, NIS_STRATUM,
-    YEAR, DQTR,
-    AGE, FEMALE, RACE,
-    HCUP_ED, HOSP_DIVISION, HOSP_NIS,
-    DRG,
-    PL_NCHS, ZIPINC_QRTL, PAY1,
-    LOS, TOTCHG
-  ) %>%
+drg2015_q1q3 <- read_fwf(
+  "S:/Health Data/USA/HCUP/NIS_2015/NIS_2015Q1Q3_DX_PR_GRPS.ASC",
+  fwf_cols(DRG = c(181, 183), KEY_NIS = c(594, 603)) # https://www.hcup-us.ahrq.gov/db/nation/nis/tools/stats/FileSpecifications_NIS_2015Q1Q3_DX_PR_GRPS.TXT
+)
+drg2015_q4 <- read_fwf(
+  "S:/Health Data/USA/HCUP/NIS_2015/NIS_2015Q4_DX_PR_GRPS.ASC",
+  fwf_cols(DRG = c(1, 3), KEY_NIS = c(366, 375)) # https://www.hcup-us.ahrq.gov/db/nation/nis/tools/stats/FileSpecifications_NIS_2015Q4_DX_PR_GRPS.TXT
+)
+
+core2015 <- fst::read_fst("data-raw/working/Core_2015.fst", as.data.table = TRUE)
+drg2015 <- data.table(bind_rows(drg2015_q1q3, drg2015_q4), key = "KEY_NIS")
+core2015[drg2015, on = "KEY_NIS"] %>% 
+  fst::write_fst("data-raw/working/Core_2015.fst", compress = 100)
+
+# Aggregate data and send to Databricks -----------------------------------
+
+library(tidycensus)
+
+core_raw <- list.files("data-raw/working/", full.names = TRUE) %>% 
+  .[str_detect(., "Core")] %>% 
+  map(~fst::read_fst(.x, as.data.table = TRUE)) %>% 
   data.table::rbindlist(fill = TRUE)
 
-nis_hosp <- map(nis0_ls, "hosp") %>%
-  data.table::rbindlist()
+core_raw$agegrp <- case_when(
+  core_raw$AGE %in% 0:4 ~ "0004",
+  core_raw$AGE %in% 5:14 ~ "0514",
+  core_raw$AGE %in% 15:44 ~ "1544",
+  core_raw$AGE %in% 45:69 ~ "4569",
+  core_raw$AGE %in% 70:84 ~ "7084",
+  core_raw$AGE %in% 85:100 ~ "85+"
+)
+core_raw$sex <- case_when(
+  core_raw$FEMALE == 1 ~ "2", 
+  core_raw$FEMALE == 0 ~ "1"
+)
+core_raw$sameday <- case_when(
+  core_raw$LOS %in% 0:1 ~ "1",
+  core_raw$LOS > 1 ~ "2"
+)
+core <- core_raw[!is.na(agegrp) & !is.na(sex) & !is.na(sameday),
+                 .(seps = sum(DISCWT), los = sum(DISCWT * LOS)),
+                 by = .(YEAR, DRG, agegrp, sex, sameday)] %>% 
+  janitor::clean_names() %>% 
+  mutate(drg = formatC(drg, width = 3, flag = "0"))
 
-fst::write_fst(nis_core, "data-raw/nis_core.fst", compress = 100)
-fst::write_fst(nis_hosp, "data-raw/nis_hosp.fst", compress = 100)
+
+
+div_pop_ls <- map(2012:2017 %>% setNames(., .), function(.year) {
+  .var_list <- load_variables(.year, "acs5", cache = TRUE)
+  .var_list2 <- .var_list %>% 
+    filter(concept == "SEX BY AGE") %>% 
+    filter(str_detect(label, "^.*?!!.*?!!.*?!!.*?$")) %>% 
+    mutate(label2 = str_replace(label, "^.*?!!.*?!!(.*?!!.*?)$", "\\1"))
+  res <- get_acs(geography = "division", 
+                 variables = .var_list2$name %>% 
+                   setNames(.var_list2$label2), 
+                 year = .year)
+  message(paste(.year, "done"))
+  return(res)
+})
+
+div_pop <- div_pop_ls %>% 
+  bind_rows(.id = "year") %>% 
+  separate(variable, into = c("sex", "age"), sep = "!!")
+
+pop <- div_pop %>% 
+  mutate(
+    agegrp = ifelse(age == "Under 5 years", "0", str_replace(age, "^(.*?)\\s.*$", "\\1")),
+    agegrp = as.numeric(agegrp),
+    agegrp = case_when(
+      agegrp %in% 0:4 ~ "0004",
+      agegrp %in% 5:14 ~ "0514",
+      agegrp %in% 15:44 ~ "1544",
+      agegrp %in% 45:69 ~ "4569",
+      agegrp %in% 70:84 ~ "7084",
+      agegrp %in% 85:100 ~ "85+"
+    ),
+    sex = case_when(
+      sex == "Male" ~ "1",
+      sex == "Female" ~ "2"
+    )
+  ) %>% 
+  group_by(year, GEOID, NAME, agegrp, sex) %>% 
+  summarise(pop = sum(estimate), .groups = "drop") %>% 
+  mutate(year = as.numeric(year))
+
+fst::write_fst(core, "data-raw/core.fst", compress = 100)
+fst::write_fst(pop,  "data-raw/pop.fst",  compress = 100)
+
+
+# DRG lookup --------------------------------------------------------------
+
+library(rvest)
+
+drg_lkup <- map(1:29, function(i) {
+  .html <- read_html(paste0("https://www.aapc.com/codes/drg-codes-range/", i, "/"))
+  .chr <- .html %>% 
+    html_elements(".list-code-range") %>% 
+    html_text() %>% 
+    str_remove_all("\t|\n") %>% 
+    str_trim()
+  tibble(src = .chr) %>% 
+    mutate(
+      drg = substr(src, 1, 3),
+      drgx = substr(src, 4, nchar(src)),
+      drgx = str_trim(drgx)
+    ) %>% 
+    select(-src)
+}) %>% 
+  bind_rows()
+
+usethis::use_data(drg_lkup, overwrite = TRUE)
+
+
+# -------------------------------------------------------------------------
+
 
 
 # Modifying fst files -----------------------------------------------------
@@ -120,10 +227,86 @@ census_div_lkup <- tibble(
 )
 
 
+# Demo figure for project protocol ----------------------------------------
+
+nis_core$age <- cut(nis_core$AGE, 
+                    breaks = c(0, 5, 16, 45, 70, 85, Inf), 
+                    labels = c("00-04", "05-15", "15-44", "45-69", "70-84", "85+"), 
+                    right = FALSE)
+nis_core$sameday <- ifelse(nis_core$LOS %in% c(0, 1), "sameday", "overnight")
+
+nis_core_summary <- nis_core[, .(n = sum(DISCWT), los = sum(LOS)), 
+                             by = .(YEAR, DQTR, age, FEMALE, sameday, DRG)]
+
+nis_core_summary %>% 
+  count(DRG) %>% 
+  arrange(-n)
+
+nis_core_summary_drg_clean <- nis_core_summary %>% 
+  filter(DRG == "392") %>% 
+  filter(DQTR != -9, FEMALE %in% c(0, 1)) %>% 
+  filter(!is.na(age)) %>% 
+  mutate(
+    yq = paste0(YEAR, " Q", DQTR),
+    sex = ifelse(FEMALE == 1, "Female", "Male"),
+    los = abs(los),
+    pop = case_when(
+      age == "70-84" ~ 8000,
+      age == "85+" ~ 5000,
+      TRUE ~ 10000
+    ),
+    rate = n / pop
+  )
+
+bind_rows(
+  nis_core_summary_drg_clean %>% 
+    select(yq, age, sex, sameday, value = rate) %>% 
+    mutate(title = paste("Rate per 1000 -", str_to_title(sameday))),
+  nis_core_summary_drg_clean %>% 
+    filter(sameday == "overnight") %>% 
+    mutate(
+      alos = los / n * 3,
+      alos = ifelse(alos < 1.5, 1.8, alos),
+      alos = ifelse(alos > 6, 6, alos)
+    ) %>% 
+    select(yq, age, sex, sameday, value = alos) %>% 
+    mutate(title = "ALOS Overnight")
+) %>% 
+  mutate(
+    title = case_when(
+      title == "Rate per 1000 - Sameday" ~ paste("1:", title),
+      title == "Rate per 1000 - Overnight" ~ paste("2:", title),
+      title == "ALOS Overnight" ~ paste("3:", title)
+    )
+  ) %>% 
+  ggplot(aes(yq, value, col = sex, group = sex)) +
+  geom_point() +
+  geom_line() +
+  facet_grid(title ~ age) +
+  theme(
+    legend.position = "top", 
+    legend.title = element_blank(),
+    axis.ticks = element_blank()
+  )
+
+nis_core_summary_drg_clean %>% 
+  ggplot(aes(yq, n, col = sex)) +
+  geom_point() +
+  facet_grid(sameday ~ age)
+
+nis_core[, .(n = sum(DISCWT), los = sum(LOS)), by = DRG] %>% 
+  arrange(-n)
+
+
+nis_core_summary %>% 
+  group_by(DRG) %>% 
+  summarise(n = sum(n)) %>% 
+  arrange(-n)
+
 # To map geography (later) ------------------------------------------------
 
 # https://www.irs.gov/statistics/soi-tax-stats-individual-income-tax-statistics-2017-zip-code-data-soi
-# income <- vroom::vroom("data-raw/17zpallagi.csv") %>% 
+# income <- vroom::vroom("data-raw/17zpallagi.csv") %>%
 #   as.data.table()
 
 # https://www.cdc.gov/nchs/data_access/urban_rural.htm#Data_Files_and_Documentation
@@ -133,10 +316,10 @@ census_div_lkup <- tibble(
 # zip_fips_lkup <- map(1:10, ~read_fwf(
 #   paste0("data-raw/zipcty/zipcty", .x),
 #   fwf_cols(zip = c(1, 5), stateabb = c(24, 25), fips = c(26, 28))
-# )) %>% 
-#   rbindlist() %>% 
-#   unique() %>% 
-#   filter(!is.na(zip)) %>% 
+# )) %>%
+#   rbindlist() %>%
+#   unique() %>%
+#   filter(!is.na(zip)) %>%
 #   mutate(fips = as.numeric(fips))
 
 # zip_info <- inner_join(
@@ -173,6 +356,44 @@ usmap_shape <- USAboundaries::us_states() %>%
   group_by(div, divx) %>% 
   summarise(geometry = st_union(geometry), .groups = "drop") %>% 
   filter(!is.na(div))
+
+trend <- nis_core[, .(n = sum(DISCWT)), by = .(YEAR, DQTR, HOSP_DIVISION)] %>% 
+  filter(DQTR > 0) %>% 
+  arrange(HOSP_DIVISION, YEAR, DQTR) %>% 
+  group_by(div = HOSP_DIVISION) %>% 
+  mutate(year = row_number() + 2017) %>% 
+  ungroup() %>% 
+  select(year, div, n)
+
+trend %>% 
+  group_by(div = HOSP_DIVISION) %>% 
+  mutate(YEAR = YEAR + 3) %>% 
+  nest() %>% .$data %>%  .[[1]] -> x
+
+x <- x %>% 
+  arrange(YEAR, DQTR) %>% 
+  mutate(i = row_number())
+model <- lm(n ~ i, data = x)
+x2 <- x %>% mutate(YEAR = YEAR + 3, pred = TRUE)
+x2_pred <- bind_rows(x, x2) %>% 
+  mutate(i = row_number()) %>% 
+  filter(pred) %>% 
+  predict(model, .)
+x2 %>% 
+  mutate(n = x2_pred) %>% 
+  bind_rows(x) %>% 
+  mutate(yq = paste(YEAR, DQTR)) %>% 
+  ggplot(aes(yq, n)) + geom_point() + facet_wrap(~HOSP_DIVISION)
+
+te <- nis_core[, .(n = sum(DISCWT)), by = .(YEAR, DQTR, HOSP_DIVISION)]
+te %>% 
+  mutate(yq = paste(YEAR, DQTR)) %>% 
+  ggplot(aes(yq, n)) +
+  geom_point() +
+  facet_wrap(~HOSP_DIVISION)
+
+
+# $sameday
 
 # %>% 
 #   leaflet() %>% 

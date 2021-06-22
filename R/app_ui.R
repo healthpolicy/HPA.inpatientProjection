@@ -12,15 +12,57 @@ app_ui <- function(request) {
     # List the first level UI elements here 
     leaflet::leafletOutput("map", height = "100vh"),
     absolutePanel(
-      id = "controls", class = "panel panel-default", 
+      id = "controls", class = "panel panel-default",
       fixed = TRUE,
       top = "5vh", height = "95vh",
-      left = "auto", right = 20, width = "45vw", 
+      left = "auto", right = 20, width = "45vw",
       
       h3("Projection"),
       "Test",
       h3("Comparison"),
       "Test"
+    ),
+    absolutePanel(
+      id = "valuebox", class = "panel panel-default",
+      fixed = TRUE,
+      top = "70vh", height = "20vh",
+      left = 20, width = "50vw",
+      
+      fluidRow(
+        style = "color:white",
+        div(
+          style = "width:33%;float:left",
+          tags$h1("16"),
+          tags$p("Average", tags$br(), " length of stay")
+        ),
+        div(
+          style = "width:33%;float:left",
+          tags$h1("16"),
+          tags$p("% sameday", tags$br(), "episodes")
+        ),
+        div(
+          style = "width:33%;float:left",
+          tags$h1("16"),
+          tags$p("Relative", tags$br(), "utilisation")
+        )
+      )
+      
+      # ,
+      # 
+      # fluidRow(
+      #   column(
+      #     4,
+      #     "x"
+      #   ),
+      #   column(
+      #     4,
+      #     "x"
+      #   ),
+      #   column(
+      #     4,
+      #     "x"
+      #   )  
+      # )
     )
   )
 }
