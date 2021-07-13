@@ -1,8 +1,10 @@
 library(tidyverse)
+library(dtplyr)
 library(data.table)
+library(tidycensus)
+library(rvest)
 
-
-# Read in raw data and save selected columns ------------------------------
+# 1. NIS data acquisition ----
 
 get_hcup_spec <- function(.file, .year) {
   spec_url <- paste0("https://www.hcup-us.ahrq.gov/db/nation/nis/tools/stats/",
@@ -63,8 +65,8 @@ read_hcup_fwf <- function(.file, .year, .spec_df, .root_dir) {
 }
 
 file_year_combn <- expand_grid(
-  file = c("Core", "Hospital"),
-  year = 2012:2017
+  year = 2017:2007,
+  file = c("Core", "Hospital")
 )
 
 .root_dir <- "S:\\Health Data\\USA\\HCUP\\"
@@ -77,10 +79,10 @@ for (i in 1:nrow(file_year_combn)) {
   if (.file == "Core") {
     .target_columns <- c(
       "DISCWT", 
-      "KEY_NIS",
+      "KEY_NIS", "KEY",
       "NIS_STRATUM", "YEAR", "DQTR",
       "AGE", "FEMALE", "RACE", "HCUP_ED", "HOSP_DIVISION",
-      "HOSP_NIS", # "HOSPID",
+      "HOSP_NIS", "HOSPID",
       "DRG", "PL_NCHS", "ZIPINC_QRTL", "PAY1",        
       "LOS", "TOTCHG"
     )
@@ -91,7 +93,7 @@ for (i in 1:nrow(file_year_combn)) {
   }
   fst::write_fst(.read_in, paste0("data-raw/working/", .file, "_", .year, ".fst"), compress = 100)
   # result_ls[[.file]][[.year]] <- .read_in
-  rm(raw_data);gc()
+  rm(raw_data);rm(.read_in);gc()
 }
 
 drg2015_q1q3 <- read_fwf(
@@ -108,40 +110,116 @@ drg2015 <- data.table(bind_rows(drg2015_q1q3, drg2015_q4), key = "KEY_NIS")
 core2015[drg2015, on = "KEY_NIS"] %>% 
   fst::write_fst("data-raw/working/Core_2015.fst", compress = 100)
 
-# Aggregate data and send to Databricks -----------------------------------
+# 2. DRG lookup ----
 
-library(tidycensus)
+drg_grp_lkup_raw <- read_html("https://www.aapc.com/codes/drg-codes-range") %>% 
+  html_elements(".cpt-dark-grey") %>% 
+  map(
+    ~html_elements(.x, "div") %>% 
+      html_text() %>% 
+      tibble(value = .) %>% 
+      mutate(name = c("drg_grp", "drg_range", "drg_grpx"))
+  ) %>% 
+  bind_rows(.id = "i") %>% 
+  pivot_wider()
 
-core_raw <- list.files("data-raw/working/", full.names = TRUE) %>% 
+drg_lkup_raw <- map(1:29, function(i) {
+  .html <- read_html(paste0("https://www.aapc.com/codes/drg-codes-range/", i, "/"))
+  .chr <- .html %>% 
+    html_elements(".list-code-range") %>% 
+    html_text() %>% 
+    str_remove_all("\t|\n") %>% 
+    str_trim()
+  tibble(src = .chr) %>% 
+    mutate(
+      drg = substr(src, 1, 3),
+      drgx = substr(src, 4, nchar(src)),
+      drgx = str_trim(drgx),
+      drgx = paste(drg, drgx)
+    ) %>% 
+    select(-src)
+}) %>% 
+  bind_rows()
+
+drg_lkup <- drg_grp_lkup_raw %>% 
+  mutate(
+    drg_grp = case_when(
+      drg_range == "001-019" ~ "00",
+      drg_range == "981-989" ~ "26",
+      drg_range == "998-998" ~ "98",
+      drg_range == "999-999" ~ "99",
+      TRUE ~ drg_grp
+    ),
+    drg_grpx = paste(drg_grp, drg_grpx)
+  ) %>% 
+  split(.$i) %>%  
+  map(function(x) {
+    range_num <- as.numeric(str_split(x$drg_range, "\\-")[[1]])
+    tibble(
+      drg = formatC(range_num[1]:range_num[2], width = 3, flag = "0"),
+      drg_grp = x$drg_grp,
+      drg_grpx = x$drg_grpx
+    )
+  }) %>% 
+  bind_rows() %>% 
+  left_join(drg_lkup_raw)
+
+drg_grp_lkup <- drg_lkup %>% 
+  select(drg_grp, drg_grpx) %>% 
+  unique()
+
+usethis::use_data(drg_lkup, overwrite = TRUE)
+usethis::use_data(drg_grp_lkup, overwrite = TRUE)
+
+
+# 3. NIS data aggregation ----
+
+core <- list.files("data-raw/working/", full.names = TRUE) %>% 
   .[str_detect(., "Core")] %>% 
-  map(~fst::read_fst(.x, as.data.table = TRUE)) %>% 
+  map(function(.filename) {
+    .df <- fst::read_fst(.filename, as.data.table = TRUE
+                  # , to = 1000
+    )
+    .df$agegrp <- case_when(
+      .df$AGE %in% 0:4 ~ "0004",
+      .df$AGE %in% 5:14 ~ "0514",
+      .df$AGE %in% 15:44 ~ "1544",
+      .df$AGE %in% 45:69 ~ "4569",
+      .df$AGE %in% 70:84 ~ "7084",
+      .df$AGE %in% 85:100 ~ "85+"
+    )
+    .df$sex <- case_when(
+      .df$FEMALE == 1 ~ "2", 
+      .df$FEMALE == 0 ~ "1"
+    )
+    .df$sameday <- case_when(
+      .df$LOS %in% 0:1 ~ "1",
+      .df$LOS > 1 ~ "2"
+    )
+    # Shifting years
+    .df$year <- .df$YEAR + 2
+    
+    .df2 <- .df[!is.na(agegrp) & !is.na(sex) & !is.na(sameday),
+                .(seps = sum(DISCWT), los = sum(DISCWT * LOS)),
+                by = .(year, DRG, agegrp, sex, sameday)] %>% 
+      janitor::clean_names() %>% 
+      mutate(drg = formatC(drg, width = 3, flag = "0"))
+    
+    .df2 %>% 
+      lazy_dt() %>% 
+      left_join(drg_lkup, by = "drg") %>% 
+      filter(!is.na(drg_grp)) %>% 
+      group_by(year, drg_grp, agegrp, sex, sameday) %>%
+      summarise(across(c(seps, los), sum)) %>% 
+      ungroup() %>% 
+      as_tibble()
+  }) %>% 
   data.table::rbindlist(fill = TRUE)
 
-core_raw$agegrp <- case_when(
-  core_raw$AGE %in% 0:4 ~ "0004",
-  core_raw$AGE %in% 5:14 ~ "0514",
-  core_raw$AGE %in% 15:44 ~ "1544",
-  core_raw$AGE %in% 45:69 ~ "4569",
-  core_raw$AGE %in% 70:84 ~ "7084",
-  core_raw$AGE %in% 85:100 ~ "85+"
-)
-core_raw$sex <- case_when(
-  core_raw$FEMALE == 1 ~ "2", 
-  core_raw$FEMALE == 0 ~ "1"
-)
-core_raw$sameday <- case_when(
-  core_raw$LOS %in% 0:1 ~ "1",
-  core_raw$LOS > 1 ~ "2"
-)
-core <- core_raw[!is.na(agegrp) & !is.na(sex) & !is.na(sameday),
-                 .(seps = sum(DISCWT), los = sum(DISCWT * LOS)),
-                 by = .(YEAR, DRG, agegrp, sex, sameday)] %>% 
-  janitor::clean_names() %>% 
-  mutate(drg = formatC(drg, width = 3, flag = "0"))
 
+# 4. Population data ----
 
-
-div_pop_ls <- map(2012:2017 %>% setNames(., .), function(.year) {
+div_pop_ls <- map(2009:2019 %>% setNames(., .), function(.year) {
   .var_list <- load_variables(.year, "acs5", cache = TRUE)
   .var_list2 <- .var_list %>% 
     filter(concept == "SEX BY AGE") %>% 
@@ -172,8 +250,8 @@ pop <- div_pop %>%
       agegrp %in% 85:100 ~ "85+"
     ),
     sex = case_when(
-      sex == "Male" ~ "1",
-      sex == "Female" ~ "2"
+      sex %in% c("Male", "Male:") ~ "1",
+      sex %in% c("Female", "Female:") ~ "2"
     )
   ) %>% 
   group_by(year, GEOID, NAME, agegrp, sex) %>% 
@@ -184,124 +262,6 @@ fst::write_fst(core, "data-raw/core.fst", compress = 100)
 fst::write_fst(pop,  "data-raw/pop.fst",  compress = 100)
 
 
-# DRG lookup --------------------------------------------------------------
-
-library(rvest)
-
-drg_lkup <- map(1:29, function(i) {
-  .html <- read_html(paste0("https://www.aapc.com/codes/drg-codes-range/", i, "/"))
-  .chr <- .html %>% 
-    html_elements(".list-code-range") %>% 
-    html_text() %>% 
-    str_remove_all("\t|\n") %>% 
-    str_trim()
-  tibble(src = .chr) %>% 
-    mutate(
-      drg = substr(src, 1, 3),
-      drgx = substr(src, 4, nchar(src)),
-      drgx = str_trim(drgx)
-    ) %>% 
-    select(-src)
-}) %>% 
-  bind_rows()
-
-usethis::use_data(drg_lkup, overwrite = TRUE)
-
-
-# -------------------------------------------------------------------------
-
-
-
-# Modifying fst files -----------------------------------------------------
-
-nis_core <- fst::read_fst("data-raw/nis_core.fst", as.data.table = TRUE)[AGE != -99 & PL_NCHS != -99]
-nis_hosp <- fst::read_fst("data-raw/nis_hosp.fst", as.data.table = TRUE)
-
-census_div_lkup <- tibble(
-  reg = as.numeric(state.region),
-  regx = state.region,
-  div = as.numeric(state.division),
-  divx = state.division,
-  statex = state.name,
-  stateabb = state.abb
-)
-
-
-# Demo figure for project protocol ----------------------------------------
-
-nis_core$age <- cut(nis_core$AGE, 
-                    breaks = c(0, 5, 16, 45, 70, 85, Inf), 
-                    labels = c("00-04", "05-15", "15-44", "45-69", "70-84", "85+"), 
-                    right = FALSE)
-nis_core$sameday <- ifelse(nis_core$LOS %in% c(0, 1), "sameday", "overnight")
-
-nis_core_summary <- nis_core[, .(n = sum(DISCWT), los = sum(LOS)), 
-                             by = .(YEAR, DQTR, age, FEMALE, sameday, DRG)]
-
-nis_core_summary %>% 
-  count(DRG) %>% 
-  arrange(-n)
-
-nis_core_summary_drg_clean <- nis_core_summary %>% 
-  filter(DRG == "392") %>% 
-  filter(DQTR != -9, FEMALE %in% c(0, 1)) %>% 
-  filter(!is.na(age)) %>% 
-  mutate(
-    yq = paste0(YEAR, " Q", DQTR),
-    sex = ifelse(FEMALE == 1, "Female", "Male"),
-    los = abs(los),
-    pop = case_when(
-      age == "70-84" ~ 8000,
-      age == "85+" ~ 5000,
-      TRUE ~ 10000
-    ),
-    rate = n / pop
-  )
-
-bind_rows(
-  nis_core_summary_drg_clean %>% 
-    select(yq, age, sex, sameday, value = rate) %>% 
-    mutate(title = paste("Rate per 1000 -", str_to_title(sameday))),
-  nis_core_summary_drg_clean %>% 
-    filter(sameday == "overnight") %>% 
-    mutate(
-      alos = los / n * 3,
-      alos = ifelse(alos < 1.5, 1.8, alos),
-      alos = ifelse(alos > 6, 6, alos)
-    ) %>% 
-    select(yq, age, sex, sameday, value = alos) %>% 
-    mutate(title = "ALOS Overnight")
-) %>% 
-  mutate(
-    title = case_when(
-      title == "Rate per 1000 - Sameday" ~ paste("1:", title),
-      title == "Rate per 1000 - Overnight" ~ paste("2:", title),
-      title == "ALOS Overnight" ~ paste("3:", title)
-    )
-  ) %>% 
-  ggplot(aes(yq, value, col = sex, group = sex)) +
-  geom_point() +
-  geom_line() +
-  facet_grid(title ~ age) +
-  theme(
-    legend.position = "top", 
-    legend.title = element_blank(),
-    axis.ticks = element_blank()
-  )
-
-nis_core_summary_drg_clean %>% 
-  ggplot(aes(yq, n, col = sex)) +
-  geom_point() +
-  facet_grid(sameday ~ age)
-
-nis_core[, .(n = sum(DISCWT), los = sum(LOS)), by = DRG] %>% 
-  arrange(-n)
-
-
-nis_core_summary %>% 
-  group_by(DRG) %>% 
-  summarise(n = sum(n)) %>% 
-  arrange(-n)
 
 # To map geography (later) ------------------------------------------------
 

@@ -3,7 +3,6 @@ library(fable)
 library(sparkline)
 
 projected_rates <- readRDS("data-raw/projections.rds")
-projected_rates <- projected_rates[!map_lgl(names(projected_rates), is.na)]
 usethis::use_data(projected_rates, overwrite = TRUE)
 
 drg_spk_df_raw <- projected_rates %>%
@@ -13,14 +12,18 @@ drg_spk_df_raw <- projected_rates %>%
       split(.$obs)
     .pred <- .l_split$pred %>%
       filter(.model == unique(.l$perf$best_model))
+    if (".model_alos" %in% names(.l$data)) {
+      .pred <- .pred %>% 
+        filter(.model_alos == unique(.l$perf_alos$best_model))
+    }
     .pred %>%
       bind_rows(.l_split$obs) %>%
       select(group, year, seps, los, pop, rate) %>%
       arrange(year)
   }) %>%
   bind_rows() %>%
-  separate(group, into = c("drg", "dayonly", "sex", "age"), sep = "_", remove = FALSE) %>%
-  group_by(drg, year, dayonly) %>%
+  separate(group, into = c("drg_grp", "dayonly", "sex", "age"), sep = "_", remove = FALSE) %>%
+  group_by(drg_grp, year, dayonly) %>%
   summarise(across(c(seps, los), ~sum(., na.rm = TRUE)), .groups = "drop") %>%
   mutate(
     alos = los / seps,
@@ -52,7 +55,7 @@ generate_spk <- function(.df, .value_col, .type, .y_max, .digits) {
 }
 
 drg_spk_df <- drg_spk_df_raw %>%
-  group_nest(drg) %>%
+  group_nest(drg_grp) %>%
   mutate(spk = map(data, ~tibble(
     seps_ov = generate_spk(.x, "seps_ov", "line", .y_max = max(.x$seps_sd, .x$seps_ov), .digits = 0),
     seps_sd = generate_spk(.x, "seps_sd", "line", .y_max = max(.x$seps_sd, .x$seps_ov), .digits = 0),
@@ -60,8 +63,8 @@ drg_spk_df <- drg_spk_df_raw %>%
   ))) %>%
   select(-data) %>%
   unnest(cols = spk) %>%
-  left_join(drg_lkup) %>%
-  select(drg, drgx, seps_sd, seps_ov, alos_ov)
+  left_join(drg_grp_lkup) %>%
+  select(drg_grp, drg_grpx, seps_sd, seps_ov, alos_ov)
 # drg_spk_df %>%
 #   DT::datatable(escape = FALSE) %>%
 #   sparkline::spk_add_deps()

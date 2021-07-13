@@ -21,7 +21,7 @@ attachment::att_from_rscripts() %>%
 
 ## Add modules ----
 ## Create a module infrastructure in R/
-# golem::add_module(name = "chart")
+golem::add_module(name = "state_lv")
 
 ## Add helper functions ----
 ## Creates ftc_* and utils_*
